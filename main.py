@@ -140,6 +140,17 @@ def regime(series):
     return min(REGIME_HI, max(REGIME_LO, recent / full))
 
 
+def pooled_shapes(pool_raw):
+    """The case-wide pooled quantile shape at each rung: every market's
+    changes divided by its own typical step, merged and read off."""
+    shapes = {}
+    for h, vals in pool_raw.items():
+        if vals:
+            vals.sort()
+            shapes[h] = [plain_quantile(vals, t) for t in TAUS]
+    return shapes
+
+
 def rung_row(table, h):
     """Quantile row at horizon h, interpolated in sqrt(h) over the ladder."""
     hs = sorted(table)
@@ -176,11 +187,7 @@ def view_grids(series_list, half_life, pool_share, inner, outer, horizon,
             if size > 0.0:
                 pool_raw[h].extend(c / size for c in ch)
         prepared.append((series, per_rung))
-    pool_shape = {}
-    for h, vals in pool_raw.items():
-        if vals:
-            vals.sort()
-            pool_shape[h] = [plain_quantile(vals, t) for t in TAUS]
+    pool_shape = pooled_shapes(pool_raw)
 
     scales = (outer, inner, 1.0, inner, outer)
     grids = []
@@ -261,19 +268,30 @@ def forecast_case(markets, horizon):
                               "q": [[flat] * 5 for _ in range(horizon)]})
             continue
         w = logit_weight(prices[-1])
-        rows = []
-        for h in range(horizon):
-            row = []
-            for k in range(5):
-                v = ((1.0 - w) * price_grids[idx][h][k]
-                     + w * sigmoid(logit_grids[idx][h][k]))
-                row.append(round6(v))
-            for k in range(1, 5):
-                if row[k] < row[k - 1]:
-                    row[k] = row[k - 1]
-            rows.append(row)
+        rows = blend_market(price_grids[idx], logit_grids[idx], w, horizon)
         forecasts.append({"id": m["id"], "q": rows})
     return forecasts
+
+
+def blend_market(price_grid, logit_grid, w, horizon):
+    """Mix the two views of one market with logit weight w.
+
+    The logit grid is mapped back through the sigmoid before mixing;
+    every value is rounded to 6 decimals, clipped to [0, 1] and the
+    row forced non-decreasing.
+    """
+    rows = []
+    for h in range(horizon):
+        row = []
+        for k in range(5):
+            v = ((1.0 - w) * price_grid[h][k]
+                 + w * sigmoid(logit_grid[h][k]))
+            row.append(round6(v))
+        for k in range(1, 5):
+            if row[k] < row[k - 1]:
+                row[k] = row[k - 1]
+        rows.append(row)
+    return rows
 
 
 def main():
